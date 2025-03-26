@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
+import { DBGymVps } from '../types/index.ts';
 
-export const gymVPSSchema = new mongoose.Schema(
+export const gymVPSSchema = new mongoose.Schema<DBGymVps>(
   {
     id: { type: String, required: true, unique: true },
     ip: { type: String, required: true },
@@ -26,4 +27,4 @@ export const gymVPSSchema = new mongoose.Schema(
   { collection: 'gym_servers' }
 );
 
-export const GymVPS = mongoose.model('GymVPS', gymVPSSchema);
+export const GymVpsModel = mongoose.model('GymVPS', gymVPSSchema);

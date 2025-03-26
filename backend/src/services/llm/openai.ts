@@ -1,6 +1,5 @@
-import OpenAI from "openai";
-import { GenericModelMessage } from "../../types.ts";
-import { ILLMService, LLMConfig, StreamResponse } from "./types.ts";
+import OpenAI from 'openai';
+import { ILLMService, LLMConfig, StreamResponse, GenericModelMessage } from '../../types/index.ts';
 
 export class OpenAIService implements ILLMService {
   private openai: OpenAI;
@@ -9,7 +8,7 @@ export class OpenAIService implements ILLMService {
   constructor(config: LLMConfig) {
     this.config = config;
     this.openai = new OpenAI({
-      apiKey: config.apiKey,
+      apiKey: config.apiKey
     });
   }
 
@@ -21,8 +20,7 @@ export class OpenAIService implements ILLMService {
     try {
       const stream = await this.openai.chat.completions.create({
         model: this.config.model,
-        messages:
-          messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+        messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
         temperature: this.config.temperature ?? 0.9,
         max_tokens: this.config.maxTokens ?? 1024,
         top_p: 0.7,
@@ -31,7 +29,7 @@ export class OpenAIService implements ILLMService {
         stream: true,
         tools: tools,
         tool_choice: toolChoice,
-        parallel_tool_calls: false,
+        parallel_tool_calls: false
       });
 
       return {
@@ -42,8 +40,8 @@ export class OpenAIService implements ILLMService {
 
               if (delta?.content) {
                 yield {
-                  type: "text_delta",
-                  delta: delta.content,
+                  type: 'text_delta',
+                  delta: delta.content
                 };
               }
 
@@ -51,33 +49,30 @@ export class OpenAIService implements ILLMService {
                 const toolCall = delta.tool_calls[0];
                 if (toolCall.function && toolCall.id) {
                   yield {
-                    type: "tool_call",
+                    type: 'tool_call',
                     function: {
                       id: toolCall.id,
-                      name: toolCall.function.name || "unknown",
-                      arguments: toolCall.function.arguments || "",
-                    },
+                      name: toolCall.function.name || 'unknown',
+                      arguments: toolCall.function.arguments || ''
+                    }
                   };
                 }
               }
 
-              if (chunk.choices[0]?.finish_reason === "stop") {
-                yield { type: "stop" };
+              if (chunk.choices[0]?.finish_reason === 'stop') {
+                yield { type: 'stop' };
               }
             }
           } catch (error) {
             yield {
-              type: "error",
-              message:
-                error instanceof Error
-                  ? error.message
-                  : "Unknown error occurred",
+              type: 'error',
+              message: error instanceof Error ? error.message : 'Unknown error occurred'
             };
           }
-        },
+        }
       };
     } catch (error) {
-      console.error("OpenAI Service Error:", error);
+      console.error('OpenAI Service Error:', error);
       throw error;
     }
   }

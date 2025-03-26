@@ -3,7 +3,7 @@ import DatabaseService from '../services/db/index.ts';
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
 import { randomBytes } from 'crypto';
-import { TrainingEvent } from '../models/TrainingEvent.ts';
+import { TrainingEventModel } from '../models/TrainingEvent.ts';
 import { ChatCompletionContentPartImage } from 'openai/resources/index.mjs';
 
 dotenv.config();
@@ -152,6 +152,7 @@ async function generateQuest(
 
     const response = await openai.chat.completions.create({
       model: 'o3-mini',
+      //@ts-ignore: ignore the error here -- it's defined in the documention, not sure why the types are broken
       reasoning_effort: 'medium',
       messages: [
         {
@@ -338,14 +339,14 @@ router.post('/quest', async (req: Request, res: Response) => {
     });
 
     // Get current quest from latest quest event
-    const latestQuestEvent = await TrainingEvent.findOne(
+    const latestQuestEvent = await TrainingEventModel.findOne(
       { session: sessionId, type: 'quest' },
       {},
       { sort: { timestamp: -1 } }
     ).lean();
 
     // Get hint history
-    const hintEvents = await TrainingEvent.find(
+    const hintEvents = await TrainingEventModel.find(
       { session: sessionId, type: 'hint' },
       { message: 1 },
       { sort: { timestamp: -1 }, limit: 3 }

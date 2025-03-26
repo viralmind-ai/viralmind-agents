@@ -1,7 +1,7 @@
-import getSolPriceInUSDT from "../../hooks/solPrice.ts";
-import DatabaseService, { ChallengeDocument } from "../db/index.ts";
-import BlockchainService from "../blockchain/index.ts";
-import axios from "axios";
+import DatabaseService from '../db/index.ts';
+import BlockchainService from '../blockchain/index.ts';
+import axios from 'axios';
+import { DBChallenge } from '../../types/db.ts';
 
 class TournamentService {
   solanaRpc: string;
@@ -10,19 +10,17 @@ class TournamentService {
   }
 
   // validate
-  async validateChallenge(challenge: ChallengeDocument) {
-    if (!challenge) throw new Error("Challenge not found");
+  async validateChallenge(challenge: DBChallenge) {
+    if (!challenge) throw new Error('Challenge not found');
 
-    if (challenge.status === "upcoming")
+    if (challenge.status === 'upcoming')
       throw new Error(`Tournament starts in ${challenge.start_date}`);
-    if (challenge.status === "concluded")
-      throw new Error("Tournament has already concluded");
-    if (challenge.status != "active")
-      throw new Error("Tournament is not active");
+    if (challenge.status === 'concluded') throw new Error('Tournament has already concluded');
+    if (challenge.status != 'active') throw new Error('Tournament is not active');
 
-    if (!challenge.idl?.address) throw new Error("Program ID not found");
-    if (!challenge.tournamentPDA) throw new Error("Tournament PDA not found");
-    if (!challenge.system_message) throw new Error("System prompt not found");
+    if (!challenge.idl?.address) throw new Error('Program ID not found');
+    if (!challenge.tournamentPDA) throw new Error('Tournament PDA not found');
+    if (!challenge.system_message) throw new Error('System prompt not found');
   }
 
   /**
@@ -46,14 +44,14 @@ class TournamentService {
    *   });
    * }
    */
-  async checkScores(): Promise<ChallengeDocument["scores"] | void> {
+  async checkScores(): Promise<DBChallenge['scores'] | void> {
     try {
       const response = await axios.get(
         `http://${process.env.SERVICE_HOST}:${process.env.SERVICE_PORT}/scores`
       );
       return response.data;
     } catch (error) {
-      console.error("Error checking winner:", error);
+      console.error('Error checking winner:', error);
     }
   }
 
@@ -86,7 +84,7 @@ class TournamentService {
       );
       return response.data;
     } catch (error) {
-      console.error("Error making attempt:", error);
+      console.error('Error making attempt:', error);
       return null;
     }
   }
@@ -98,16 +96,16 @@ class TournamentService {
     entryFee: number,
     isValidTransaction: boolean
   ) {
-    console.log("🎉 Processing tournament win...");
+    console.log('🎉 Processing tournament win...');
 
     try {
       // Calculate prize amounts
-      console.log("💰 Calculating prize amounts...");
-      const solPrice = await getSolPriceInUSDT();
+      console.log('💰 Calculating prize amounts...');
+      const solPrice = await BlockchainService.getSolPriceInUSDT();
       console.log(`💱 Current SOL price in USDT: ${solPrice}`);
 
       const challenge = await DatabaseService.getChallengeById(challengeId);
-      if (!challenge) throw Error("Could not find challange " + challengeId);
+      if (!challenge) throw Error('Could not find challange ' + challengeId);
       const fee_multiplier = challenge.fee_multiplier || 100;
       const winningPrize = entryFee * fee_multiplier;
       console.log(`🏆 Winning prize in SOL: ${winningPrize}`);
@@ -116,10 +114,10 @@ class TournamentService {
       console.log(`💵 Prize value in USD: $${usdPrize}`);
 
       if (isValidTransaction) {
-        console.log("🔗 Initiating blockchain tournament conclusion...");
+        console.log('🔗 Initiating blockchain tournament conclusion...');
         const blockchainService = new BlockchainService(
           this.solanaRpc,
-          challenge.idl?.address
+          challenge.idl?.address! // idl is defined with a valid txn
         );
 
         const concluded = await blockchainService.concludeTournament(
@@ -130,11 +128,11 @@ class TournamentService {
 
         // Update challenge status
         await DatabaseService.updateChallenge(challengeId, {
-          status: "concluded",
+          status: 'concluded',
           expiry: new Date(),
           winning_prize: winningPrize,
           usd_prize: usdPrize,
-          winner: winner,
+          winner: winner
         });
 
         return {
@@ -142,29 +140,26 @@ class TournamentService {
           transaction: concluded,
           prize: {
             sol: winningPrize,
-            usd: usdPrize,
-          },
+            usd: usdPrize
+          }
         };
       } else {
         // Handle invalid transaction case
-        console.log(
-          "⚠️ Transaction validation failed, proceeding with manual verification"
-        );
+        console.log('⚠️ Transaction validation failed, proceeding with manual verification');
 
         // Update challenge status for manual verification
         await DatabaseService.updateChallenge(challengeId, {
-          status: "concluded",
-          expiry: new Date(),
+          status: 'concluded',
+          expiry: new Date()
         });
 
         return {
           success: false,
-          message:
-            "Transaction verification failed, manual verification required",
+          message: 'Transaction verification failed, manual verification required'
         };
       }
     } catch (error) {
-      console.error("❌ Error processing tournament win:", error);
+      console.error('❌ Error processing tournament win:', error);
       throw error;
     }
   }
@@ -176,51 +171,43 @@ class TournamentService {
     entryFee: number,
     walletAddress: string
   ) {
-    const blockchainService = new BlockchainService(
-      this.solanaRpc,
-      process.env.PROGRAM_ID!
-    );
+    const blockchainService = new BlockchainService(this.solanaRpc, process.env.PROGRAM_ID!);
 
-    return blockchainService.verifyTransaction(
-      signature,
-      tournamentPDA,
-      entryFee,
-      walletAddress
-    );
+    return blockchainService.verifyTransaction(signature, tournamentPDA, entryFee, walletAddress);
   }
 
   // Check if challenge is active
   async isChallengeActive(challengeId: string) {
     const challenge = await DatabaseService.getChallengeById(challengeId);
-    return challenge?.status === "active";
+    return challenge?.status === 'active';
   }
 
   // Update challenge entry fee and expiry
   async updateChallengeEntry(challengeId: string, entryFee: number) {
     const challenge = await DatabaseService.getChallengeById(challengeId);
-    if (!challenge) throw Error("Could not find challenge " + challengeId);
+    if (!challenge) throw Error('Could not find challenge ' + challengeId);
     const now = new Date();
     const oneHourInMillis = 3600000;
 
     await DatabaseService.updateChallenge(challengeId, {
       entryFee: entryFee,
       ...(challenge.expiry!.getTime() - now.getTime() < oneHourInMillis && {
-        expiry: new Date(now.getTime() + oneHourInMillis),
-      }),
+        expiry: new Date(now.getTime() + oneHourInMillis)
+      })
     });
   }
 
   // Validate challenge status
   async validateChallengeStatus(challengeId: string) {
     const challenge = await DatabaseService.getChallengeById(challengeId);
-    if (!challenge) throw new Error("Challenge not found");
+    if (!challenge) throw new Error('Challenge not found');
 
-    if (challenge.status === "upcoming") {
+    if (challenge.status === 'upcoming') {
       throw new Error(`Tournament starts in ${challenge.start_date}`);
-    } else if (challenge.status === "concluded") {
-      throw new Error("Tournament has already concluded");
-    } else if (challenge.status !== "active") {
-      throw new Error("Tournament is not active");
+    } else if (challenge.status === 'concluded') {
+      throw new Error('Tournament has already concluded');
+    } else if (challenge.status !== 'active') {
+      throw new Error('Tournament is not active');
     }
 
     return challenge;

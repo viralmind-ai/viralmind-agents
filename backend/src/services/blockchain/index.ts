@@ -14,6 +14,7 @@ import {
   getAssociatedTokenAddressSync,
   getOrCreateAssociatedTokenAccount
 } from '@solana/spl-token';
+import DatabaseService from '../db/index.ts';
 import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import axios from 'axios';
@@ -26,13 +27,41 @@ class BlockchainService {
     this.programId = programId;
   }
 
+  static async getSolPriceInUSDT() {
+    let defaultSolPrice = 230;
+
+    try {
+      const tokenPage = await DatabaseService.getPages({ name: 'viral-token' });
+      if (tokenPage && tokenPage[0]?.content?.sol_price) {
+        defaultSolPrice = tokenPage[0].content.sol_price;
+      }
+
+      try {
+        const response = await fetch(
+          'https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd'
+        );
+        const data = await response.json();
+        if (data?.solana?.usd) {
+          return data.solana.usd;
+        }
+        return defaultSolPrice;
+      } catch (err) {
+        console.error('Error fetching Sol price from CoinGecko:', err);
+        return defaultSolPrice;
+      }
+    } catch (err) {
+      console.error('Error fetching token page:', err);
+      return defaultSolPrice;
+    }
+  }
+
   async getSolBalance(walletAddress: string): Promise<number> {
     try {
       const walletPubkey = new PublicKey(walletAddress);
       const balance = await this.connection.getBalance(walletPubkey);
       return balance / LAMPORTS_PER_SOL;
     } catch (error) {
-      console.error("Error getting SOL balance:", error);
+      console.error('Error getting SOL balance:', error);
       return 0;
     }
   }
@@ -53,9 +82,11 @@ class BlockchainService {
       } catch (error) {
         // If the token account doesn't exist, return 0
         // The error message can vary, but it's usually about not finding the account
-        if ((error as any).message?.includes('could not find') || 
-            (error as any).message?.includes('Invalid param') ||
-            (error as any).code === -32602) {
+        if (
+          (error as any).message?.includes('could not find') ||
+          (error as any).message?.includes('Invalid param') ||
+          (error as any).code === -32602
+        ) {
           return 0;
         }
         throw error; // Re-throw other errors

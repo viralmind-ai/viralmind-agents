@@ -1,41 +1,7 @@
 import { Schema, model } from 'mongoose';
+import { DBTrainingPool, TrainingPoolStatus, UploadLimitType } from '../types/index.ts';
 
-export enum TrainingPoolStatus {
-  live = 'live',
-  paused = 'paused',
-  noFunds = 'no-funds',
-  noGas = 'no-gas'
-}
-
-export enum UploadLimitType {
-  perTask = 'per-task',
-  perDay = 'per-day',
-  total = 'total'
-}
-
-export interface TrainingPool {
-  id: string;
-  name: string;
-  status: TrainingPoolStatus;
-  demonstrations: number;
-  funds: number;
-  pricePerDemo: number;
-  token: {
-    type: 'SOL' | 'VIRAL' | 'CUSTOM';
-    symbol: string;
-    address: string;
-  };
-  skills: string;
-  ownerAddress: string;
-  depositAddress: string;
-  depositPrivateKey: string; // Store private key securely
-  uploadLimit?: {
-    type: number;
-    limitType: UploadLimitType;
-  };
-}
-
-const trainingPoolSchema = new Schema<TrainingPool>(
+const trainingPoolSchema = new Schema<DBTrainingPool>(
   {
     name: { type: String, required: true },
     status: {
@@ -78,4 +44,4 @@ const trainingPoolSchema = new Schema<TrainingPool>(
   }
 );
 
-export const TrainingPoolModel = model<TrainingPool>('TrainingPool', trainingPoolSchema);
+export const TrainingPoolModel = model<DBTrainingPool>('TrainingPool', trainingPoolSchema);

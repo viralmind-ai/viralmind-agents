@@ -1,31 +1,28 @@
 import EventEmitter from 'node:events';
 import {
-  Chat,
-  Challenge,
-  Pages,
-  RaceSession,
-  Race,
-  GymSession,
+  ChatModel,
+  ChallengeModel,
+  PagesModel,
+  RaceSessionModel,
+  RaceModel,
+  GymSessionModel,
   chatSchema,
-  challengeSchema,
-  pageSchema,
-  raceSessionSchema,
-  raceSchema,
-  gymSessionSchema
+  challengeSchema
 } from '../../models/Models.ts';
-import { TrainingEvent } from '../../models/TrainingEvent.ts';
+import { TrainingEventModel } from '../../models/TrainingEvent.ts';
 import dotenv from 'dotenv';
 import { InferSchemaType, QueryOptions, SortOrder, UpdateWriteOpResult } from 'mongoose';
-import { GymVPS, gymVPSSchema } from '../../models/GymVPS.ts';
-import { VPSRegion } from '../gym-vps/types.ts';
-
-export type ChallengeDocument = InferSchemaType<typeof challengeSchema>;
-export type ChatDocument = InferSchemaType<typeof chatSchema>;
-export type PageDocument = InferSchemaType<typeof pageSchema>;
-export type RaceSessionDocument = InferSchemaType<typeof raceSessionSchema>;
-export type RaceDocument = InferSchemaType<typeof raceSchema>;
-export type GymVPSDocument = InferSchemaType<typeof gymVPSSchema>;
-export type GymSessionDocument = InferSchemaType<typeof gymSessionSchema>;
+import { GymVpsModel, gymVPSSchema } from '../../models/GymVPS.ts';
+import {
+  VPSRegion,
+  DBChallenge,
+  DBChat,
+  DBPage,
+  DBRace,
+  DBGymVps,
+  DBGymSession,
+  DBRaceSession
+} from '../../types/index.ts';
 
 dotenv.config();
 
@@ -36,10 +33,10 @@ class DataBaseService extends EventEmitter {
   }
 
   // Challenge-related methods
-  async getAllChallenges(): Promise<InferSchemaType<typeof challengeSchema>[] | false> {
+  async getAllChallenges(): Promise<DBChallenge[] | false> {
     try {
       return (
-        (await Challenge.find(
+        (await ChallengeModel.find(
           {},
           {
             _id: 1,
@@ -71,19 +68,19 @@ class DataBaseService extends EventEmitter {
     }
   }
 
-  async getChallengeById(id: string, projection = {}): Promise<ChallengeDocument | null> {
+  async getChallengeById(id: string, projection = {}): Promise<DBChallenge | null> {
     try {
-      return await Challenge.findOne({ _id: id }, projection);
+      return await ChallengeModel.findOne({ _id: id }, projection);
     } catch (error) {
       console.error('Database Service Error:', error);
       return null;
     }
   }
 
-  async getChallengeByName(name: string, projection = {}): Promise<ChallengeDocument | false> {
+  async getChallengeByName(name: string, projection = {}): Promise<DBChallenge | false> {
     const nameReg = { $regex: name, $options: 'i' };
     try {
-      return (await Challenge.findOne({ name: nameReg }, projection)) || false;
+      return (await ChallengeModel.findOne({ name: nameReg }, projection)) || false;
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
@@ -92,7 +89,7 @@ class DataBaseService extends EventEmitter {
 
   async updateChallenge(id: string, updateData: object): Promise<UpdateWriteOpResult | false> {
     try {
-      return await Challenge.updateOne({ _id: id }, { $set: updateData });
+      return await ChallengeModel.updateOne({ _id: id }, { $set: updateData });
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
@@ -100,10 +97,10 @@ class DataBaseService extends EventEmitter {
   }
 
   // Chat-related methods
-  async createChat(chatData: ChatDocument): Promise<ChatDocument | false> {
+  async createChat(chatData: DBChat): Promise<DBChat | false> {
     try {
       this.emit('new-chat', chatData);
-      return await Chat.create(chatData);
+      return await ChatModel.create(chatData);
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
@@ -114,9 +111,9 @@ class DataBaseService extends EventEmitter {
     query: QueryOptions,
     sort: { [key: string]: SortOrder } = { date: -1 },
     limit = 0
-  ): Promise<ChatDocument[] | false> {
+  ): Promise<DBChat[] | false> {
     try {
-      return await Chat.find(query)
+      return await ChatModel.find(query)
         .sort(sort)
         .limit(limit)
         .select('role content screenshot date address -_id');
@@ -133,7 +130,7 @@ class DataBaseService extends EventEmitter {
     limit = 0
   ): Promise<InferSchemaType<typeof chatSchema>[] | false> {
     try {
-      return await Chat.find(query, projection).sort(sort).limit(limit);
+      return await ChatModel.find(query, projection).sort(sort).limit(limit);
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
@@ -142,32 +139,32 @@ class DataBaseService extends EventEmitter {
 
   async getChatCount(query: QueryOptions): Promise<number | false> {
     try {
-      return await Chat.countDocuments(query);
+      return await ChatModel.countDocuments(query);
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
     }
   }
 
-  async findOneChat(query: QueryOptions): Promise<ChatDocument | false> {
+  async findOneChat(query: QueryOptions): Promise<DBChat | false> {
     try {
-      return (await Chat.findOne(query)) || false;
+      return (await ChatModel.findOne(query)) || false;
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
     }
   }
-  async getPages(query: QueryOptions): Promise<PageDocument[] | undefined> {
+  async getPages(query: QueryOptions): Promise<DBPage[] | undefined> {
     try {
-      return await Pages.find(query);
+      return await PagesModel.find(query);
     } catch (error) {
       console.error('Database Service Error:', error);
     }
   }
   // Settings-related methods
-  async getSettings(): Promise<ChallengeDocument[] | undefined> {
+  async getSettings(): Promise<DBChallenge[] | undefined> {
     try {
-      const challenge = await Challenge.find(
+      const challenge = await ChallengeModel.find(
         {},
         {
           _id: 0,
@@ -196,13 +193,9 @@ class DataBaseService extends EventEmitter {
   }
 
   // Add these new methods
-  async getUserConversations(
-    address: string,
-    skip = 0,
-    limit = 20
-  ): Promise<ChatDocument[] | false> {
+  async getUserConversations(address: string, skip = 0, limit = 20): Promise<DBChat[] | false> {
     try {
-      return await Chat.find(
+      return await ChatModel.find(
         { address },
         {
           id: '$_id',
@@ -227,9 +220,9 @@ class DataBaseService extends EventEmitter {
     challenge: string,
     skip = 0,
     limit = 20
-  ): Promise<ChatDocument[] | false> {
+  ): Promise<DBChat[] | false> {
     try {
-      return await Chat.find(
+      return await ChatModel.find(
         { address, challenge },
         {
           _id: 0,
@@ -249,9 +242,9 @@ class DataBaseService extends EventEmitter {
     }
   }
 
-  async getAllTournaments(): Promise<ChallengeDocument[] | false> {
+  async getAllTournaments(): Promise<DBChallenge[] | false> {
     try {
-      return await Challenge.find(
+      return await ChallengeModel.find(
         {},
         {
           _id: 0,
@@ -280,18 +273,18 @@ class DataBaseService extends EventEmitter {
   }
 
   // Race session methods
-  async createRaceSession(sessionData: RaceSessionDocument): Promise<RaceSessionDocument | false> {
+  async createRaceSession(sessionData: DBRaceSession): Promise<DBRaceSession | false> {
     try {
-      return await RaceSession.create(sessionData);
+      return await RaceSessionModel.create(sessionData);
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
     }
   }
 
-  async getRaceSession(id: string): Promise<RaceSessionDocument | null> {
+  async getRaceSession(id: string): Promise<DBRaceSession | null> {
     try {
-      return await RaceSession.findById(id);
+      return await RaceSessionModel.findById(id);
     } catch (error) {
       console.error('Database Service Error:', error);
       return null;
@@ -300,28 +293,28 @@ class DataBaseService extends EventEmitter {
 
   async updateRaceSession(
     id: string,
-    updateData: Partial<RaceSessionDocument>
-  ): Promise<RaceSessionDocument | null> {
+    updateData: Partial<DBRaceSession>
+  ): Promise<DBRaceSession | null> {
     try {
-      return await RaceSession.findByIdAndUpdate(id, updateData, { new: true });
+      return await RaceSessionModel.findByIdAndUpdate(id, updateData, { new: true });
     } catch (error) {
       console.error('Database Service Error:', error);
       return null;
     }
   }
 
-  async getRaceById(id: string, projection = {}): Promise<RaceDocument | null> {
+  async getRaceById(id: string, projection = {}): Promise<DBRace | null> {
     try {
-      return await Race.findOne({ id: id }, projection);
+      return await RaceModel.findOne({ id: id }, projection);
     } catch (error) {
       console.error('Database Service Error:', error);
       return null;
     }
   }
 
-  async getRaces(): Promise<RaceDocument[] | false> {
+  async getRaces(): Promise<DBRace[] | false> {
     try {
-      return await Race.find(
+      return await RaceModel.find(
         {},
         {
           id: 1,
@@ -342,9 +335,9 @@ class DataBaseService extends EventEmitter {
     }
   }
 
-  async getRaceSessions(filter?: { address?: string }): Promise<RaceSessionDocument[] | false> {
+  async getRaceSessions(filter?: { address?: string }): Promise<DBRaceSession[] | false> {
     try {
-      return await RaceSession.find(filter || {}, {
+      return await RaceSessionModel.find(filter || {}, {
         // id: "$_id",
         _id: 1,
         status: 1,
@@ -361,13 +354,13 @@ class DataBaseService extends EventEmitter {
     }
   }
 
-  async getRaceSessionsByIds(ids: string[]): Promise<RaceSessionDocument[] | false> {
+  async getRaceSessionsByIds(ids: string[]): Promise<DBRaceSession[] | false> {
     try {
       console.log('Getting race sessions for IDs:', ids);
       const mongoose = await import('mongoose');
       const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
       console.log('Converted to ObjectIds:', objectIds);
-      return await RaceSession.find(
+      return await RaceSessionModel.find(
         { _id: { $in: objectIds } },
         {
           _id: 1,
@@ -399,9 +392,9 @@ class DataBaseService extends EventEmitter {
     }
   }
 
-  async getRaceSessionByStream(streamId: string): Promise<RaceSessionDocument | null> {
+  async getRaceSessionByStream(streamId: string): Promise<DBRaceSession | null> {
     try {
-      return await RaceSession.findOne({ stream_id: streamId });
+      return await RaceSessionModel.findOne({ stream_id: streamId });
     } catch (error) {
       console.error('Database Service Error:', error);
       return null;
@@ -411,7 +404,7 @@ class DataBaseService extends EventEmitter {
   // Training event methods
   async createTrainingEvent(eventData: any): Promise<any> {
     try {
-      return await TrainingEvent.create(eventData);
+      return await TrainingEventModel.create(eventData);
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
@@ -420,7 +413,7 @@ class DataBaseService extends EventEmitter {
 
   async getTrainingEvents(sessionId: string): Promise<any[]> {
     try {
-      return await TrainingEvent.find({ session: sessionId }).sort({
+      return await TrainingEventModel.find({ session: sessionId }).sort({
         timestamp: 1
       });
     } catch (error) {
@@ -429,10 +422,10 @@ class DataBaseService extends EventEmitter {
     }
   }
 
-  async getTournamentById(id: string): Promise<ChallengeDocument | false> {
+  async getTournamentById(id: string): Promise<DBChallenge | false> {
     try {
       return (
-        (await Challenge.findOne(
+        (await ChallengeModel.findOne(
           { _id: id },
           {
             _id: 0,
@@ -461,9 +454,9 @@ class DataBaseService extends EventEmitter {
     }
   }
 
-  async createTournament(tournamentData: ChallengeDocument): Promise<ChallengeDocument | false> {
+  async createTournament(tournamentData: DBChallenge): Promise<DBChallenge | false> {
     try {
-      const savedChallenge = new Challenge(tournamentData);
+      const savedChallenge = new ChallengeModel(tournamentData);
       await savedChallenge.save();
       return savedChallenge;
     } catch (error) {
@@ -472,11 +465,9 @@ class DataBaseService extends EventEmitter {
     }
   }
 
-  async getHighestAndLatestScore(
-    challengeName: string
-  ): Promise<ChallengeDocument['scores'] | null> {
+  async getHighestAndLatestScore(challengeName: string): Promise<DBChallenge['scores'] | null> {
     try {
-      const challenge = await Challenge.findOne({
+      const challenge = await ChallengeModel.findOne({
         name: { $regex: challengeName, $options: 'i' }
       });
 
@@ -503,7 +494,7 @@ class DataBaseService extends EventEmitter {
 
   async removeGymVPSUser(ip: string, username: string): Promise<void> {
     try {
-      await GymVPS.updateOne({ ip }, { $pull: { users: { username } } });
+      await GymVpsModel.updateOne({ ip }, { $pull: { users: { username } } });
     } catch (error) {
       console.error('Database Service Error:', error);
     }
@@ -511,36 +502,37 @@ class DataBaseService extends EventEmitter {
 
   async addGymVPSUser(ip: string, username: string, password: string): Promise<void> {
     try {
-      const exists = await GymVPS.findOne({
+      const exists = await GymVpsModel.findOne({
         ip: ip,
         'users.username': username
       });
       // don't add a new user if we are already connected to the rdp
-      if (!exists) await GymVPS.updateOne({ ip }, { $addToSet: { users: { username, password } } });
+      if (!exists)
+        await GymVpsModel.updateOne({ ip }, { $addToSet: { users: { username, password } } });
     } catch (error) {
       console.error('Database Service Error:', error);
     }
   }
 
-  async getGymVPS(region: VPSRegion): Promise<GymVPSDocument> {
-    const vps = await GymVPS.findOne({ region });
+  async getGymVPS(region: VPSRegion): Promise<DBGymVps> {
+    const vps = await GymVpsModel.findOne({ region });
     if (!vps) throw Error('Could not find a VPS for region ' + region);
     return vps;
   }
 
   // Gym session methods
-  async getGymSession(address: string): Promise<GymSessionDocument | null> {
+  async getGymSession(address: string): Promise<DBGymSession | null> {
     try {
-      return await GymSession.findOne({ address, status: 'active' });
+      return await GymSessionModel.findOne({ address, status: 'active' });
     } catch (error) {
       console.error('Database Service Error:', error);
       return null;
     }
   }
 
-  async createGymSession(sessionData: GymSessionDocument): Promise<GymSessionDocument | false> {
+  async createGymSession(sessionData: DBGymSession): Promise<DBGymSession | false> {
     try {
-      return await GymSession.create(sessionData);
+      return await GymSessionModel.create(sessionData);
     } catch (error) {
       console.error('Database Service Error:', error);
       return false;
@@ -549,10 +541,10 @@ class DataBaseService extends EventEmitter {
 
   async updateGymSession(
     id: string,
-    updateData: Partial<GymSessionDocument>
-  ): Promise<GymSessionDocument | null> {
+    updateData: Partial<DBGymSession>
+  ): Promise<DBGymSession | null> {
     try {
-      return await GymSession.findByIdAndUpdate(id, updateData, { new: true });
+      return await GymSessionModel.findByIdAndUpdate(id, updateData, { new: true });
     } catch (error) {
       console.error('Database Service Error:', error);
       return null;

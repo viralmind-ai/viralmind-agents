@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
+import { DBGymSession } from '../types/index.ts';
 
-const gymSessionSchema = new mongoose.Schema(
+export const gymSessionSchema = new mongoose.Schema<DBGymSession>(
   {
     _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
     address: { type: String, required: true },
@@ -12,5 +13,4 @@ const gymSessionSchema = new mongoose.Schema(
   { collection: 'gym_sessions' }
 );
 
-export const GymSession = mongoose.model('GymSession', gymSessionSchema);
-export { gymSessionSchema };
+export const GymSessionModel = mongoose.model('GymSession', gymSessionSchema);

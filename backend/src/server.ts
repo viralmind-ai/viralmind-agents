@@ -73,10 +73,6 @@ import { gymRoute } from './routes/gym.ts';
 import { forgeRoute } from './routes/forge.ts';
 import { forgeUploadRoute } from './routes/forge-upload.ts';
 
-// API:
-import { tournamentsAPI } from './api/tournaments.ts';
-import { conversationsAPI } from './api/conversation.ts';
-
 app.use('/api/challenges', challengesRoute);
 app.use('/api/conversation', conversationRoute);
 app.use('/api/settings', settingsRoute);
@@ -85,8 +81,6 @@ app.use('/api/races', racesRoute);
 app.use('/api/gym', gymRoute);
 app.use('/api/forge', forgeRoute);
 app.use('/api/forge/upload', forgeUploadRoute);
-app.use('/api/json/v1/tournaments', tournamentsAPI);
-app.use('/api/json/v1/conversations', conversationsAPI);
 
 catchErrors();
 

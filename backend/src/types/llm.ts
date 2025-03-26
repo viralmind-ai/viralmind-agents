@@ -1,11 +1,10 @@
-import { Anthropic } from "@anthropic-ai/sdk";
-import OpenAI from "openai";
-import { GenericModelMessage } from "../../types.ts";
+import { Anthropic } from '@anthropic-ai/sdk';
+import OpenAI from 'openai';
 
-export type LLMProvider = "openai" | "anthropic";
+export type LLMProvider = 'openai' | 'anthropic';
 
 export type StreamResponse = AsyncIterable<{
-  type: "text_delta" | "tool_call" | "stop" | "error";
+  type: 'text_delta' | 'tool_call' | 'stop' | 'error';
   delta?: string;
   function?: {
     id: string;
@@ -19,7 +18,9 @@ export interface ILLMService {
   createChatCompletion(
     messages: GenericModelMessage[],
     tools?: OpenAI.Chat.Completions.ChatCompletionTool[] | Anthropic.Beta.BetaTool[],
-    toolChoice?: OpenAI.Chat.Completions.ChatCompletionToolChoiceOption | Anthropic.Beta.BetaToolChoice
+    toolChoice?:
+      | OpenAI.Chat.Completions.ChatCompletionToolChoiceOption
+      | Anthropic.Beta.BetaToolChoice
   ): Promise<StreamResponse>;
 }
 
@@ -28,4 +29,11 @@ export interface LLMConfig {
   model: string;
   maxTokens?: number;
   temperature?: number;
+}
+
+export interface GenericModelMessage {
+  role?: string;
+  content: any;
+  tool_call_id?: string;
+  tool_use_id?: string;
 }

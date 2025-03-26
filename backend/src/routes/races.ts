@@ -1,7 +1,8 @@
 import express, { Request, Response } from 'express';
-import DatabaseService, { RaceSessionDocument } from '../services/db/index.ts';
+import DatabaseService from '../services/db/index.ts';
 import { GymVPSService } from '../services/gym-vps/index.ts';
 import GuacamoleService from '../services/guacamole/index.ts';
+import { Webhook } from '../services/webhook/index.ts';
 import OpenAI from 'openai';
 import dotenv from 'dotenv';
 
@@ -11,19 +12,20 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-import { TrainingEvent } from '../models/TrainingEvent.ts';
-import { RaceSession } from '../models/Models.ts';
+import { TrainingEventModel } from '../models/TrainingEvent.ts';
+import { RaceSessionModel } from '../models/Models.ts';
 import { Keypair } from '@solana/web3.js';
 import { readFileSync } from 'fs';
 import BlockchainService from '../services/blockchain/index.ts';
-import { VPSRegion } from '../services/gym-vps/types.ts';
+import { VPSRegion } from '../types/gym.ts';
 import { TreasuryService } from '../services/treasury/index.ts';
 import { AWSS3Service } from '../services/aws/index.ts';
 import { unlink } from 'fs/promises';
 import { isAxiosError } from 'axios';
 import { handleAxiosError } from '../services/util.ts';
+import { DBRace, DBRaceSession } from '../types/db.ts';
 
-async function generateQuest(imageUrl: string, prompt: string, session: RaceSessionDocument) {
+async function generateQuest(imageUrl: string, prompt: string, session: DBRaceSession) {
   try {
     // Get treasury balance
     const treasuryBalance = await blockchainService.getTokenBalance(
@@ -98,7 +100,7 @@ async function generateHint(
   imageUrl: string,
   currentQuest: string,
   prompt: string,
-  session: RaceSessionDocument,
+  session: DBRaceSession,
   maxReward: number,
   hintHistory: string[] = []
 ) {
@@ -121,7 +123,7 @@ async function generateHint(
     // Mark this session as generating a hint
     generatingHints.add(session._id.toString());
 
-    const recentHint = await TrainingEvent.findOne(
+    const recentHint = await TrainingEventModel.findOne(
       {
         session: session._id,
         type: 'hint',
@@ -141,7 +143,7 @@ async function generateHint(
     }
 
     // Get latest quest event (no time limit)
-    const latestQuestEvent = await TrainingEvent.findOne(
+    const latestQuestEvent = await TrainingEventModel.findOne(
       {
         session: session._id,
         type: 'quest'
@@ -359,7 +361,7 @@ Output as JSON with three fields:
 const router = express.Router();
 
 type RaceCategory = 'creative' | 'mouse' | 'slacker' | 'gaming' | 'wildcard';
-type RaceSessionInput = Omit<RaceSessionDocument, '_id'> & {
+type RaceSessionInput = Omit<DBRaceSession, '_id'> & {
   category: RaceCategory;
 };
 
@@ -604,7 +606,7 @@ async function stopRaceSession(id: string): Promise<{ success: boolean; totalRew
   // Only process rewards if session is active
   if (was_active) {
     // Get all reward events for this session
-    const rewardEvents = await TrainingEvent.find({
+    const rewardEvents = await TrainingEventModel.find({
       session: id,
       type: 'reward',
       'metadata.rewardValue': { $exists: true }
@@ -641,7 +643,7 @@ async function stopRaceSession(id: string): Promise<{ success: boolean; totalRew
         await vpsService.removeTrainer(session.vm_credentials?.username!);
 
         // save recording to s3 if we have a video path
-        const sessionEvents = await TrainingEvent.find({
+        const sessionEvents = await TrainingEventModel.find({
           session: id
         }).sort({ timestamp: 1 }); // Sort by timestamp ascending
         if (sessionEvents.length > 0) {
@@ -718,8 +720,8 @@ async function checkRaceExpiration(id: string): Promise<boolean> {
   if (session.status !== 'active') return true;
 
   const now = Date.now();
-  const sessionAge = now - session.created_at.getTime();
-  const lastUpdateAge = now - session.updated_at.getTime();
+  const sessionAge = now - session.created_at!.getTime();
+  const lastUpdateAge = now - session.updated_at!.getTime();
 
   // Expire if:
   // 1. Session is older than 15 minutes OR
@@ -786,16 +788,8 @@ router.post('/feedback', async (req: Request, res: Response) => {
     // Forward to webhook if configured
     const webhookUrl = process.env.FEEDBACK_WEBHOOK;
     if (webhookUrl) {
-      await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          content: `New Race Idea Submission:\n${raceIdea}`,
-          timestamp: new Date().toISOString()
-        })
-      });
+      const webhook = new Webhook(webhookUrl);
+      await webhook.sendText(`New Race Idea Submission:\n${raceIdea}`);
     }
 
     res.json({ success: true, message: 'Feedback received' });
@@ -820,7 +814,7 @@ router.get('/active', async (req: Request, res: Response) => {
     const inactiveTime = now - 60 * 1000; // 1 minute ago
 
     // Update expired sessions in a single operation - only those that are actually expired
-    await RaceSession.updateMany(
+    await RaceSessionModel.updateMany(
       {
         address: walletAddress,
         status: 'active',
@@ -838,7 +832,7 @@ router.get('/active', async (req: Request, res: Response) => {
     );
 
     // Find active race session - this will only find sessions that are still active after the update
-    const activeRaceSession = await RaceSession.findOne({
+    const activeRaceSession = await RaceSessionModel.findOne({
       address: walletAddress,
       status: 'active'
     });
@@ -873,7 +867,7 @@ router.get('/history', async (req: Request, res: Response) => {
     const inactiveTime = now - 60 * 1000; // 1 minute ago
 
     // Update expired sessions in a single operation
-    await RaceSession.updateMany(
+    await RaceSessionModel.updateMany(
       {
         address: walletAddress,
         status: 'active',
@@ -991,7 +985,7 @@ router.get('/history', async (req: Request, res: Response) => {
       }
     ];
 
-    const enrichedRaces = await RaceSession.aggregate(aggregationPipeline);
+    const enrichedRaces = await RaceSessionModel.aggregate(aggregationPipeline);
 
     if (!enrichedRaces || enrichedRaces.length === 0) {
       res.status(404).json({ error: 'No races found' });
@@ -1040,7 +1034,7 @@ router.post('/session/:id/hint', async (req: Request, res: Response) => {
     // if theres a screenshot but no initial quest
     // then assume the initial quest is still generating & abort
     if (session.preview) {
-      const latestQuestEvent = await TrainingEvent.findOne(
+      const latestQuestEvent = await TrainingEventModel.findOne(
         { session: id, type: 'quest' },
         {},
         { sort: { timestamp: -1 } }
@@ -1065,14 +1059,14 @@ router.post('/session/:id/hint', async (req: Request, res: Response) => {
     const imageUrl = screenshot;
 
     // Get current quest from latest quest event
-    const latestQuestEvent = await TrainingEvent.findOne(
+    const latestQuestEvent = await TrainingEventModel.findOne(
       { session: id, type: 'quest' },
       {},
       { sort: { timestamp: -1 } }
     );
 
     // Get hint history
-    const hintEvents = await TrainingEvent.find(
+    const hintEvents = await TrainingEventModel.find(
       { session: id, type: 'hint' },
       { message: 1 },
       { sort: { timestamp: -1 }, limit: 3 }
@@ -1160,7 +1154,7 @@ router.get('/export', async (req: Request, res: Response) => {
     }
 
     // Get all events for this session
-    const sessionEvents = await TrainingEvent.find({
+    const sessionEvents = await TrainingEventModel.find({
       session: session._id
     }).sort({ timestamp: 1 }); // Sort by timestamp ascending
     // Transform events into a more readable format
@@ -1216,7 +1210,7 @@ router.post('/export', async (req: Request, res: Response) => {
     // Get all training events for the selected sessions
     const events = await Promise.all(
       sessions.map(async (session) => {
-        const sessionEvents = await TrainingEvent.find({
+        const sessionEvents = await TrainingEventModel.find({
           session: session._id
         }).sort({ timestamp: 1 }); // Sort by timestamp ascending
         // Transform events into a more readable format

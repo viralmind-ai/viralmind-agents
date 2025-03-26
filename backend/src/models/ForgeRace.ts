@@ -1,7 +1,8 @@
-import mongoose from "mongoose";
+import mongoose from 'mongoose';
+import { DBForgeRace } from '../types/index.ts';
 
 // Store generated races
-export const forgeRaceSchema = new mongoose.Schema(
+export const forgeRaceSchema = new mongoose.Schema<DBForgeRace>(
   {
     title: { type: String, required: true },
     description: { type: String, required: true },
@@ -11,10 +12,10 @@ export const forgeRaceSchema = new mongoose.Schema(
     agent_prompt: { type: String, required: true },
     pool_id: { type: mongoose.Schema.Types.ObjectId, ref: 'TrainingPool', required: true }
   },
-  { 
-    collection: "forge_races",
-    timestamps: true 
+  {
+    collection: 'forge_races',
+    timestamps: true
   }
 );
 
-export const ForgeRace = mongoose.model("ForgeRace", forgeRaceSchema);
+export const ForgeRaceModel = mongoose.model('ForgeRace', forgeRaceSchema);

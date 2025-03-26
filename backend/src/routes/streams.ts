@@ -105,18 +105,16 @@ router.get('/challenge-chat', async (req: Request, res: Response) => {
   });
 });
 
-interface RaceStreamData {
-  data: any;
-  type: string;
-  platform: string;
-}
-
 // Store active sessions and their collected data
 const raceDataStreams = new Map<
   string,
   {
     timeoutId: NodeJS.Timeout;
-    data: RaceStreamData[]; // Array to store all received data
+    data: {
+      data: any;
+      type: string;
+      platform: string;
+    }[]; // Array to store all received data
   }
 >();
 
@@ -177,7 +175,7 @@ router.post('/races/:stream/data', async (req: Request, res: Response) => {
   const sid = session._id!.toString();
 
   try {
-    const data: RaceStreamData = req.body;
+    const data: { data: any; type: string; platform: string } = req.body;
 
     let connection = raceDataStreams.get(sid);
     if (!connection) {

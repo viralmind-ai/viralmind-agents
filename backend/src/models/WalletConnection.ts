@@ -1,12 +1,7 @@
 import { Schema, model } from 'mongoose';
+import { DBWalletConnection } from '../types/db.ts';
 
-export interface WalletConnection {
-  token: string;
-  address: string;
-  createdAt: Date;
-}
-
-const walletConnectionSchema = new Schema<WalletConnection>(
+const walletConnectionSchema = new Schema<DBWalletConnection>(
   {
     token: { type: String, required: true, unique: true },
     address: { type: String, required: true },
@@ -15,7 +10,7 @@ const walletConnectionSchema = new Schema<WalletConnection>(
   { collection: 'wallet_connections' }
 );
 
-export const WalletConnectionModel = model<WalletConnection>(
+export const WalletConnectionModel = model<DBWalletConnection>(
   'WalletConnection',
   walletConnectionSchema
 );

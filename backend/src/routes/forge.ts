@@ -1,22 +1,12 @@
 import express, { Request, Response, Router, NextFunction } from 'express';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import OpenAI from 'openai';
-import axios from 'axios';
-import {
-  TrainingPoolModel,
-  TrainingPool,
-  TrainingPoolStatus,
-  UploadLimitType
-} from '../models/TrainingPool.js';
+import { TrainingPoolModel } from '../models/TrainingPool.js';
 import { WalletConnectionModel } from '../models/WalletConnection.js';
-import { ForgeApp } from '../models/ForgeApp.js';
-import { ForgeRace } from '../models/ForgeRace.js';
-import {
-  ForgeRaceSubmission,
-  ProcessingStatus,
-  addToProcessingQueue
-} from '../models/ForgeRaceSubmission.js';
-import DatabaseService from '../services/db/index.js';
+import { addToProcessingQueue } from '../services/forge/processing.ts';
+import { ForgeAppModel } from '../models/ForgeApp.js';
+import { ForgeRaceModel } from '../models/ForgeRace.js';
+import { ForgeRaceSubmission } from '../models/ForgeRaceSubmission.js';
 import { AWSS3Service } from '../services/aws/index.ts';
 import BlockchainService from '../services/blockchain/index.ts';
 
@@ -27,90 +17,36 @@ import { mkdir, unlink, copyFile, stat } from 'fs/promises';
 import * as path from 'path';
 import { Extract } from 'unzipper';
 import { createHash } from 'crypto';
-import * as bs58 from 'bs58';
 import nacl from 'tweetnacl';
-
-const FORGE_WEBHOOK = process.env.GYM_FORGE_WEBHOOK;
-const BALANCE_REFRESH_INTERVAL = 30 * 1000; // 30 seconds
+import {
+  AppInfo,
+  AppWithLimitInfo,
+  ConnectBody,
+  CreatePoolBody,
+  TaskWithLimitInfo,
+  DBTrainingPool,
+  TrainingPoolStatus,
+  UpdatePoolBody,
+  UploadLimitType,
+  ForgeSubmissionProcessingStatus
+} from '../types/index.ts';
+import {
+  APP_TASK_GENERATION_PROMPT,
+  generateAppsForPool,
+  startRefreshInterval,
+  SYSTEM_PROMPT,
+  TASK_SHOT_EXAMPLES
+} from '../services/forge/index.ts';
+import { Webhook } from '../services/webhook/index.ts';
+import { requireWalletAddress } from '../services/auth/index.ts';
 
 // Set up interval to refresh pool balances
-setInterval(async () => {
-  try {
-    // Get all live and paused pools
-    const pools = await TrainingPoolModel.find({
-      status: { $in: [TrainingPoolStatus.live, TrainingPoolStatus.paused] }
-    });
-
-    // Process pools in batches to avoid too many concurrent blockchain calls
-    const batchSize = 5;
-    for (let i = 0; i < pools.length; i += batchSize) {
-      const batch = pools.slice(i, i + batchSize);
-      await Promise.all(
-        batch.map(async (pool) => {
-          try {
-            // Get current token balance from blockchain
-            const balance = await blockchainService.getTokenBalance(
-              pool.token.address,
-              pool.depositAddress
-            );
-
-            // Get SOL balance to check for gas
-            const solBalance = await blockchainService.getSolBalance(pool.depositAddress);
-            const noGas = solBalance === 0;
-
-            // Update pool funds
-            let statusChanged = false;
-            if (pool.funds !== balance) {
-              pool.funds = balance;
-              statusChanged = true;
-            }
-
-            // Update status based on token and SOL balances
-            if (process.env.NODE_ENV != 'development') {
-              if (noGas) {
-                if (pool.status !== TrainingPoolStatus.noGas) {
-                  pool.status = TrainingPoolStatus.noGas;
-                  statusChanged = true;
-                }
-              } else if (balance === 0 || balance < pool.pricePerDemo) {
-                if (pool.status !== TrainingPoolStatus.noFunds) {
-                  pool.status = TrainingPoolStatus.noFunds;
-                  statusChanged = true;
-                }
-              } else if (
-                pool.status === TrainingPoolStatus.noFunds ||
-                pool.status === TrainingPoolStatus.noGas
-              ) {
-                pool.status = TrainingPoolStatus.paused;
-                statusChanged = true;
-              }
-            }
-
-            if (statusChanged) {
-              await pool.save();
-              console.log(
-                `Updated pool ${pool._id} balance to ${balance} and status to ${pool.status}`
-              );
-            }
-          } catch (error) {
-            console.error(`Error refreshing pool ${pool._id}:`, error);
-          }
-        })
-      );
-
-      // Add a small delay between batches to avoid rate limiting
-      if (i + batchSize < pools.length) {
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    }
-  } catch (error) {
-    console.error('Error in periodic pool balance refresh:', error);
-  }
-}, BALANCE_REFRESH_INTERVAL);
-
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
+// set up the discord webhook
+const FORGE_WEBHOOK = process.env.GYM_FORGE_WEBHOOK;
+const webhook = new Webhook(FORGE_WEBHOOK);
 
 // Configure multer for handling file uploads
 const upload = multer({
@@ -120,310 +56,12 @@ const upload = multer({
   }
 });
 
-// Track active generation promises
-const activeGenerations = new Map<string, Promise<void>>();
-
-// Send webhook notification
-async function notifyForgeWebhook(message: string) {
-  if (!FORGE_WEBHOOK) return;
-
-  try {
-    await axios.post(FORGE_WEBHOOK, {
-      content: message
-    });
-  } catch (error) {
-    console.error('Error sending forge webhook:', error);
-  }
-}
-
-// Generate apps for a pool
-async function generateAppsForPool(poolId: string, skills: string): Promise<void> {
-  // Cancel any existing generation for this pool
-  const existingPromise = activeGenerations.get(poolId);
-  if (existingPromise) {
-    console.log(`Canceling existing app generation for pool ${poolId}`);
-    await notifyForgeWebhook(`🔄 Canceling existing app generation for pool ${poolId}`);
-    // Let the existing promise continue but we'll ignore its results
-    activeGenerations.delete(poolId);
-  }
-
-  // Start new generation
-  let generationPromise: Promise<void>;
-  generationPromise = (async () => {
-    const pool = await TrainingPoolModel.findById(poolId);
-    if (!pool) {
-      throw new Error(`Pool ${poolId} not found`);
-    }
-
-    await notifyForgeWebhook(
-      `🎬 Starting app generation for pool "${pool.name}" (${poolId})\nSkills: ${skills}`
-    );
-    try {
-      // Delete existing apps for this pool
-      await ForgeApp.deleteMany({ pool_id: poolId });
-
-      // Generate new apps using OpenAI
-      const prompt = APP_TASK_GENERATION_PROMPT.replace('{skill list}', skills);
-      const response = await openai.chat.completions.create({
-        model: 'o3-mini',
-        reasoning_effort: 'medium',
-        messages: [
-          {
-            role: 'user',
-            content: prompt
-          }
-        ]
-      } as any); // Type assertion to handle custom model params
-
-      const content = response.choices[0].message.content;
-      if (!content) {
-        throw new Error('Empty response from OpenAI');
-      }
-
-      // Only proceed if this is still the active generation
-      // @ts-ignore
-      if (activeGenerations.get(poolId) === generationPromise) {
-        // Parse content from response
-        const generatedContent = JSON.parse(content);
-
-        // Extract apps from the new format (object with name and apps array)
-        const collectionName = generatedContent.name || 'Generated Gym';
-        const apps = generatedContent.apps || [];
-
-        // Store new apps
-        for (const app of apps) {
-          await ForgeApp.create({
-            ...app,
-            pool_id: poolId
-          });
-        }
-        console.log(`Successfully generated apps for pool ${poolId}`);
-        await notifyForgeWebhook(
-          `✅ Generated ${apps.length} apps for gym "${collectionName}" in pool "${
-            pool.name
-          }" (${poolId})\n${apps.map((a: { name: string }) => `- ${a.name}`).join('\n')}`
-        );
-      } else {
-        console.log(`App generation was superseded for pool ${poolId}`);
-      }
-    } catch (error) {
-      const err = error as Error;
-      console.error('Error generating apps:', err);
-      await notifyForgeWebhook(`❌ Error generating apps for pool ${poolId}: ${err.message}`);
-      throw err;
-    } finally {
-      // Clean up if this is still the active generation
-      // @ts-ignore
-      if (activeGenerations.get(poolId) === generationPromise) {
-        activeGenerations.delete(poolId);
-      }
-    }
-  })();
-
-  // Store the promise
-  activeGenerations.set(poolId, generationPromise);
-
-  return generationPromise;
-}
+// start the refresh interval for pool data
+startRefreshInterval();
 
 // App task generation prompt template
-const APP_TASK_GENERATION_PROMPT = `
-You are designing natural task examples for various websites and apps to train AI assistants in helping users navigate digital services effectively.  
-
-### **Instructions:**  
-- Given a list of computer skills, generate **apps and their associated tasks** that naturally incorporate those skills.  
-- Use **common digital services** unless a specific app/website is provided.  
-- Each app should have at least **5 tasks** representing **real-world user interactions**.  
-- Ensure **tasks align with the provided skills** rather than being random generic actions.
-- IMPORTANT: Avoid using personal pronouns like "my" or "your" in task descriptions. Use neutral, general language.
-- Be as exhaustive as possible, enumerating every relevant app and task given the input skill list.
-
-### **Guidelines for Mapping Skills to Apps:**  
-
-#### **1. Browser Management → Web Browsers (Chrome, Firefox, Edge, Safari, etc.)**
-✅ **Examples:** Google Chrome, Mozilla Firefox, Microsoft Edge  
-✅ **Tasks:**  
-- "Change the default search engine to DuckDuckGo in Chrome."  
-- "Restore recently closed tabs in Firefox."  
-- "Clear browsing history and cookies in Edge."  
-- "Save a webpage as a PDF in Safari."  
-- "Install an ad blocker extension in Chrome."  
-
-#### **2. Office Suite → Office Productivity Apps (Microsoft Office, Google Docs, LibreOffice, etc.)**
-✅ **Examples:** Microsoft Word, Google Docs, LibreOffice Writer  
-✅ **Tasks:**  
-- "Format a document with proper headings in Word."  
-- "Convert a DOCX file to PDF in Google Docs."  
-- "Create a table with merged cells in LibreOffice Writer."  
-- "Set up automatic spell check in Word."  
-- "Insert a graph from an Excel sheet into a Google Docs file."  
-
-#### **3. Email Client → Email Services (Gmail, Outlook, Thunderbird, etc.)**
-✅ **Examples:** Gmail, Microsoft Outlook, Mozilla Thunderbird  
-✅ **Tasks:**  
-- "Set up an email signature in Outlook."  
-- "Create a filter to move newsletters to a specific folder in Gmail."  
-- "Export emails from Thunderbird to a backup file."  
-- "Redirect incoming emails to a different address in Outlook."  
-- "Organize an inbox by creating custom labels in Gmail."  
-
-#### **4. Image Editing → Image Editors (Photoshop, GIMP, Canva, etc.)**
-✅ **Examples:** Adobe Photoshop, GIMP, Canva  
-✅ **Tasks:**  
-- "Batch resize multiple images in Photoshop."  
-- "Convert a PNG file to JPG in GIMP."  
-- "Apply a vintage filter to a photo in Canva."  
-- "Enhance the resolution of a blurry image in Photoshop."  
-- "Remove the background from an image in GIMP."  
-
-#### **5. File Operations → File Management Apps (File Explorer, etc.)**
-✅ **Examples:** File Explorer, WinRAR  
-✅ **Tasks:**  
-- "Compress files into a ZIP folder using File Explorer."  
-- "Recover a deleted file from the Recycle Bin."  
-- "Extract a RAR archive using WinRAR."  
-- "Batch rename multiple files in Windows Explorer."  
-- "Backup documents to an external hard drive."  
-
-#### **6. Code Editor → Development Environments (VS Code, Sublime Text, JetBrains, etc.)**
-✅ **Examples:** Visual Studio Code, Sublime Text, JetBrains IntelliJ IDEA  
-✅ **Tasks:**  
-- "Install the Python extension in VS Code."  
-- "Set up a dark theme in Sublime Text."  
-- "Configure workspace settings in JetBrains IntelliJ."  
-- "Enable line numbers in Visual Studio Code."  
-- "Use keyboard shortcuts to quickly navigate files in Sublime Text."  
-
-### **Output Format (JSON object):**  
-Output format should be a JSON object with the following structure:
-{
-  "name": "Concise Agent Name", // e.g. "Email Manager Agent" instead of "Email Management Task Collection"
-  "apps": [
-    {
-      "name": "App Name",
-      "domain": "example.com",
-      "description": "Brief service description",
-      "categories": ["Category1", "Category2"],
-      "tasks": [
-        {
-          "prompt": "Natural user request"
-        }
-      ]
-    }
-  ]
-}
-
-Example categories to consider:
-- Shopping
-- Travel
-- Delivery
-- Entertainment
-- Productivity
-- Local Services
-- Lifestyle
-- News & Media
-
-Focus on creating tasks that feel like genuine user requests, similar to (but avoid personal pronouns):
-- "Order dinner for a family of 4"
-- "Book a hotel in Paris for next weekend"
-- "Find running shoes under $100"
-- "Schedule a cleaning service for tomorrow"
-
-<SKILLS>
-{skill list}
-</SKILLS>
-
-Output only the JSON object with no additional text or explanation.`;
 
 const router: Router = express.Router();
-
-// Middleware to resolve connect token to wallet address
-async function requireWalletAddress(req: Request, res: Response, next: NextFunction) {
-  const token = req.headers['x-connect-token'];
-  if (!token || typeof token !== 'string') {
-    res.status(401).json({ error: 'Connect token is required' });
-    return;
-  }
-
-  const connection = await WalletConnectionModel.findOne({ token });
-  if (!connection) {
-    res.status(401).json({ error: 'Invalid connect token' });
-    return;
-  }
-
-  // Add the wallet address to the request object
-  // @ts-ignore - Add walletAddress to the request object
-  req.walletAddress = connection.address;
-  next();
-}
-
-// Function to get address from connect token (for use in routes)
-async function getAddressFromToken(token: string): Promise<string | null> {
-  if (!token) return null;
-  const connection = await WalletConnectionModel.findOne({ token });
-  return connection?.address || null;
-}
-
-interface ConnectBody {
-  token: string;
-  address: string;
-  signature?: string;
-  timestamp?: number;
-}
-
-interface CreatePoolBody {
-  name: string;
-  skills: string;
-  token: {
-    type: 'SOL' | 'VIRAL' | 'CUSTOM';
-    symbol: string;
-    address: string;
-  };
-  ownerAddress?: string; // Now optional since we get it from the token
-  pricePerDemo?: number;
-  uploadLimit?: {
-    type: number;
-    limitType: UploadLimitType;
-  };
-  apps?: {
-    name: string;
-    domain: string;
-    description?: string;
-    categories?: string[];
-    tasks: {
-      prompt: string;
-      uploadLimit?: number;
-      rewardLimit?: number;
-    }[];
-  }[];
-}
-
-interface UpdatePoolBody {
-  id: string;
-  name?: string;
-  status?: TrainingPoolStatus.live | TrainingPoolStatus.paused;
-  skills?: string;
-  pricePerDemo?: number;
-  uploadLimit?: {
-    type: number;
-    limitType: UploadLimitType;
-  };
-  apps?: {
-    name: string;
-    domain: string;
-    description?: string;
-    categories?: string[];
-    tasks: {
-      prompt: string;
-      uploadLimit?: number;
-      rewardLimit?: number;
-    }[];
-  }[];
-}
-
-interface ListPoolsBody {
-  address?: string; // Now optional since we get it from the token
-}
 
 // Upload race data endpoint
 router.post(
@@ -534,7 +172,7 @@ router.post(
               gymSubmissions = await ForgeRaceSubmission.countDocuments({
                 'meta.quest.pool_id': poolId,
                 createdAt: { $gte: today },
-                status: ProcessingStatus.COMPLETED, // Only count completed submissions
+                status: ForgeSubmissionProcessingStatus.COMPLETED, // Only count completed submissions
                 reward: { $gt: 0 } // Only count submissions that received a reward
               });
 
@@ -547,7 +185,7 @@ router.post(
             case UploadLimitType.total:
               gymSubmissions = await ForgeRaceSubmission.countDocuments({
                 'meta.quest.pool_id': poolId,
-                status: ProcessingStatus.COMPLETED, // Only count completed submissions
+                status: ForgeSubmissionProcessingStatus.COMPLETED, // Only count completed submissions
                 reward: { $gt: 0 } // Only count submissions that received a reward
               });
 
@@ -561,7 +199,7 @@ router.post(
 
         // Check task-specific upload limit
         if (meta.quest?.task_id) {
-          const app = await ForgeApp.findOne({
+          const app = await ForgeAppModel.findOne({
             pool_id: meta.poolId,
             'tasks._id': meta.quest.task_id
           });
@@ -571,7 +209,7 @@ router.post(
             if (task?.uploadLimit) {
               const taskSubmissions = await ForgeRaceSubmission.countDocuments({
                 'meta.quest.task_id': meta.quest.task_id,
-                status: ProcessingStatus.COMPLETED, // Only count completed submissions
+                status: ForgeSubmissionProcessingStatus.COMPLETED, // Only count completed submissions
                 reward: { $gt: 0 } // Only count submissions that received a reward
               });
 
@@ -610,7 +248,7 @@ router.post(
         _id: uuid,
         address,
         meta,
-        status: ProcessingStatus.PENDING,
+        status: ForgeSubmissionProcessingStatus.PENDING,
         files: uploads
       });
 
@@ -807,15 +445,6 @@ router.get(
 );
 
 // System prompt for the AI assistant
-const SYSTEM_PROMPT = `You are playing the role of someone who needs help with a specific computer task. You should act as a realistic user who is not tech-savvy but friendly and appreciative. Stay in character and express your needs naturally and casually.
-
-Remember to:
-- Keep your initial request brief and natural
-- Show mild confusion if technical terms are used
-- Express appreciation when helped
-- Stay focused on your specific task
-- Ask for clarification if needed
-- When provided context, do a tool call where in the content you must say hi and ask for your task directly (e.g. "Hi! I need to install an ad-blocker in Chrome" rather than "Can you guide me on how to install an ad-blocker?")`;
 
 interface Message {
   role: 'user' | 'assistant' | 'tool';
@@ -831,13 +460,6 @@ interface Message {
   tool_call_id?: string;
 }
 
-interface AppInfo {
-  type: 'executable' | 'website';
-  name: string;
-  path?: string;
-  url?: string;
-}
-
 interface ChatBody {
   messages: Message[];
   task_prompt: string;
@@ -845,159 +467,6 @@ interface ChatBody {
 }
 
 // Sample few-shot conversation history
-const FEW_SHOT_EXAMPLES = [
-  {
-    task_prompt: 'Find a hotel in Paris',
-    app: {
-      type: 'website',
-      name: 'Booking.com',
-      url: 'booking.com'
-    },
-    conversation: [
-      {
-        role: 'user',
-        content: 'Task: Find a hotel in Paris\nApp: Booking.com (website, URL: booking.com)'
-      },
-      {
-        role: 'assistant',
-        content: null,
-        tool_calls: [
-          {
-            id: 'call_123',
-            type: 'function',
-            function: {
-              name: 'validate_task_request',
-              arguments: JSON.stringify({
-                title: 'Find Paris hotel',
-                app: 'Booking.com',
-                icon_url: 'https://s2.googleusercontent.com/s2/favicons?domain=booking.com&sz=64',
-                objectives: [
-                  'Open <app>Booking.com</app> website in your browser',
-                  'Search for Paris hotels',
-                  'Apply filters for dates and preferences',
-                  'View hotel details and reviews'
-                ],
-                content:
-                  'Hi! I need to find a hotel in Paris for my upcoming trip. Can you help me search on Booking.com?'
-              })
-            }
-          }
-        ]
-      },
-      {
-        role: 'tool',
-        tool_call_id: 'call_123',
-        content: 'accepted'
-      },
-      {
-        role: 'user',
-        content:
-          "Sure! I'll help you find a hotel in Paris. Let's start by going to booking.com and entering your travel dates. When are you planning to visit?"
-      }
-    ]
-  },
-  {
-    task_prompt: 'Order sushi delivery',
-    app: {
-      type: 'website',
-      name: 'Uber Eats',
-      url: 'ubereats.com'
-    },
-    conversation: [
-      {
-        role: 'user',
-        content: 'Task: Order sushi delivery\nApp: Uber Eats (website, URL: ubereats.com)'
-      },
-      {
-        role: 'assistant',
-        content: null,
-        tool_calls: [
-          {
-            id: 'call_456',
-            type: 'function',
-            function: {
-              name: 'validate_task_request',
-              arguments: JSON.stringify({
-                title: 'Order sushi delivery',
-                app: 'Uber Eats',
-                icon_url: 'https://s2.googleusercontent.com/s2/favicons?domain=ubereats.com&sz=64',
-                objectives: [
-                  'Open <app>Uber Eats</app> website in your browser',
-                  'Find nearby sushi restaurants',
-                  'Select items and customize order',
-                  'Review cart before checkout'
-                ],
-                content:
-                  "Hi! I'm hungry and want to order some sushi from Uber Eats. Can you show me how?"
-              })
-            }
-          }
-        ]
-      },
-      {
-        role: 'tool',
-        tool_call_id: 'call_456',
-        content: 'accepted'
-      },
-      {
-        role: 'user',
-        content:
-          "I'll help you order sushi through Uber Eats! First, let's check which sushi restaurants deliver to your location. Could you open ubereats.com and enter your delivery address?"
-      }
-    ]
-  },
-  {
-    task_prompt: 'Find tennis shoes on sale',
-    app: {
-      type: 'website',
-      name: 'eBay',
-      url: 'ebay.com'
-    },
-    conversation: [
-      {
-        role: 'user',
-        content: 'Task: Find tennis shoes on sale\nApp: eBay (website, URL: ebay.com)'
-      },
-      {
-        role: 'assistant',
-        content: null,
-        tool_calls: [
-          {
-            id: 'call_789',
-            type: 'function',
-            function: {
-              name: 'validate_task_request',
-              arguments: JSON.stringify({
-                title: 'Find tennis shoes',
-                app: 'eBay',
-                icon_url: 'https://s2.googleusercontent.com/s2/favicons?domain=ebay.com&sz=64',
-                objectives: [
-                  'Open <app>eBay</app> website in your browser',
-                  'Search for tennis shoes',
-                  'Apply filters for size and price',
-                  'Sort and compare listings'
-                ],
-                content:
-                  "Hi! I want to buy some tennis shoes on eBay. I've never used the site before - can you help me find a good deal?"
-              })
-            }
-          }
-        ]
-      },
-      {
-        role: 'tool',
-        tool_call_id: 'call_789',
-        content: 'accepted'
-      },
-      {
-        role: 'user',
-        content:
-          "I'll help you find tennis shoes on eBay! Let's start by going to ebay.com. Do you have a specific brand or size in mind?"
-      }
-    ]
-  }
-];
-
 // Add route to router
 router.post('/chat', async (req: Request<{}, {}, ChatBody>, res: Response) => {
   try {
@@ -1014,7 +483,7 @@ router.post('/chat', async (req: Request<{}, {}, ChatBody>, res: Response) => {
     })`;
 
     // Randomly select 3 few-shot examples
-    const randomExamples = [...FEW_SHOT_EXAMPLES].sort(() => Math.random() - 0.5).slice(0, 3);
+    const randomExamples = [...TASK_SHOT_EXAMPLES].sort(() => Math.random() - 0.5).slice(0, 3);
 
     // Prepare messages for OpenAI API
     const apiMessages = [
@@ -1104,15 +573,11 @@ router.post('/chat', async (req: Request<{}, {}, ChatBody>, res: Response) => {
   }
 });
 
-interface RefreshPoolBody {
-  id: string;
-}
-
 // Refresh pool balance
 router.post(
   '/refresh',
   requireWalletAddress,
-  async (req: Request<{}, {}, RefreshPoolBody>, res: Response) => {
+  async (req: Request<{}, {}, { id: string }>, res: Response) => {
     try {
       const { id } = req.body;
 
@@ -1285,7 +750,7 @@ router.post(
         try {
           // Store the predefined apps
           for (const app of apps) {
-            await ForgeApp.create({
+            await ForgeAppModel.create({
               ...app,
               pool_id: poolId
             });
@@ -1293,7 +758,7 @@ router.post(
 
           // Log success
           console.log(`Successfully added ${apps.length} predefined apps for pool ${poolId}`);
-          await notifyForgeWebhook(
+          await webhook.sendText(
             `✅ Added ${apps.length} predefined apps for pool "${pool.name}" (${poolId})\n${apps
               .map((a) => `- ${a.name}`)
               .join('\n')}`
@@ -1301,7 +766,7 @@ router.post(
         } catch (error) {
           const appError = error as Error;
           console.error('Error adding predefined apps:', appError);
-          await notifyForgeWebhook(
+          await webhook.sendText(
             `❌ Error adding predefined apps for pool ${poolId}: ${appError.message}`
           );
           // Continue with creating the pool, just log the error
@@ -1364,7 +829,7 @@ router.post(
       let updateOperation: any = {};
 
       // Build $set operation for regular updates
-      const setUpdates: Partial<TrainingPool> = {};
+      const setUpdates: Partial<DBTrainingPool> = {};
       if (name) setUpdates.name = name;
       if (status) setUpdates.status = status;
       if (skills) setUpdates.skills = skills;
@@ -1395,11 +860,11 @@ router.post(
       if (apps && Array.isArray(apps) && apps.length > 0) {
         try {
           // Delete existing apps for this pool
-          await ForgeApp.deleteMany({ pool_id: id });
+          await ForgeAppModel.deleteMany({ pool_id: id });
 
           // Store the new apps
           for (const app of apps) {
-            await ForgeApp.create({
+            await ForgeAppModel.create({
               ...app,
               pool_id: id
             });
@@ -1437,7 +902,7 @@ router.post(
 // Get active gym races
 router.get('/gym', async (_req: Request, res: Response) => {
   try {
-    const races = await ForgeRace.find({
+    const races = await ForgeRaceModel.find({
       status: 'active',
       type: 'gym'
     }).sort({
@@ -1646,7 +1111,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
     }
 
     // Get all apps matching the initial query
-    let apps = await ForgeApp.find(appQuery).populate(
+    let apps = await ForgeAppModel.find(appQuery).populate(
       'pool_id',
       'name status pricePerDemo uploadLimit'
     );
@@ -1654,7 +1119,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
     // Filter by live pools if no specific pool_id was provided
     if (!pool_id) {
       apps = apps.filter((app) => {
-        const pool = app.pool_id as unknown as TrainingPool;
+        const pool = app.pool_id as unknown as DBTrainingPool;
         return pool && pool.status === TrainingPoolStatus.live;
       });
     }
@@ -1663,7 +1128,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
     const tasks = [];
 
     for (const app of apps) {
-      const pool = app.pool_id as unknown as TrainingPool;
+      const pool = app.pool_id as unknown as DBTrainingPool;
 
       // Check gym-wide upload limit
       let gymLimitReached = false;
@@ -1679,7 +1144,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
             gymSubmissions = await ForgeRaceSubmission.countDocuments({
               'meta.quest.pool_id': poolId,
               createdAt: { $gte: today },
-              status: ProcessingStatus.COMPLETED,
+              status: ForgeSubmissionProcessingStatus.COMPLETED,
               reward: { $gt: 0 }
             });
 
@@ -1690,7 +1155,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
           case UploadLimitType.total:
             gymSubmissions = await ForgeRaceSubmission.countDocuments({
               'meta.quest.pool_id': poolId,
-              status: ProcessingStatus.COMPLETED,
+              status: ForgeSubmissionProcessingStatus.COMPLETED,
               reward: { $gt: 0 }
             });
 
@@ -1728,7 +1193,7 @@ router.get('/tasks', async (req: Request, res: Response) => {
         ) {
           taskSubmissions = await ForgeRaceSubmission.countDocuments({
             'meta.quest.task_id': task._id.toString(),
-            status: ProcessingStatus.COMPLETED,
+            status: ForgeSubmissionProcessingStatus.COMPLETED,
             reward: { $gt: 0 }
           });
 
@@ -1864,54 +1329,26 @@ router.get('/apps', async (req: Request, res: Response) => {
     let apps;
     if (pool_id || poolIds.length > 0) {
       // If we're already filtering by specific pools, just get those apps
-      apps = await ForgeApp.find(appQuery).populate(
+      apps = await ForgeAppModel.find(appQuery).populate(
         'pool_id',
         'name status pricePerDemo uploadLimit'
       );
     } else {
       // Otherwise, get all apps and filter by live pools
-      apps = await ForgeApp.find(appQuery)
+      apps = await ForgeAppModel.find(appQuery)
         .populate('pool_id', 'name status pricePerDemo uploadLimit')
         .then((apps) =>
           apps.filter((app) => {
-            const pool = app.pool_id as unknown as TrainingPool;
+            const pool = app.pool_id as unknown as DBTrainingPool;
             return pool && pool.status === TrainingPoolStatus.live;
           })
         );
     }
 
-    // Define interface for extended app object with limit information
-    interface AppWithLimitInfo {
-      _id: any;
-      name: string;
-      domain: string;
-      description?: string | null;
-      categories?: string[];
-      pool_id: any;
-      tasks: any[];
-      createdAt?: Date;
-      updatedAt?: Date;
-      gymLimitReached: boolean;
-      gymSubmissions: number;
-      gymLimitType?: UploadLimitType;
-      gymLimitValue?: number;
-    }
-
-    // Define interface for task with limit information
-    interface TaskWithLimitInfo {
-      _id: any;
-      prompt: string;
-      uploadLimit?: number;
-      rewardLimit?: number;
-      uploadLimitReached: boolean;
-      currentSubmissions: number;
-      limitReason: string | null;
-    }
-
     // Mark tasks that have reached their upload limits instead of filtering them out
     const appsWithLimitInfo = await Promise.all(
       apps.map(async (app) => {
-        const pool = app.pool_id as unknown as TrainingPool;
+        const pool = app.pool_id as unknown as DBTrainingPool;
         // Create a new object with the required properties
         const appObj: AppWithLimitInfo = {
           ...app.toObject(),
@@ -1935,7 +1372,7 @@ router.get('/apps', async (req: Request, res: Response) => {
               gymSubmissions = await ForgeRaceSubmission.countDocuments({
                 'meta.quest.pool_id': poolId,
                 createdAt: { $gte: today },
-                status: ProcessingStatus.COMPLETED,
+                status: ForgeSubmissionProcessingStatus.COMPLETED,
                 reward: { $gt: 0 } // Only count submissions that received a reward
               });
 
@@ -1946,7 +1383,7 @@ router.get('/apps', async (req: Request, res: Response) => {
             case UploadLimitType.total:
               gymSubmissions = await ForgeRaceSubmission.countDocuments({
                 'meta.quest.pool_id': poolId,
-                status: ProcessingStatus.COMPLETED,
+                status: ForgeSubmissionProcessingStatus.COMPLETED,
                 reward: { $gt: 0 } // Only count submissions that received a reward
               });
 
@@ -1965,7 +1402,6 @@ router.get('/apps', async (req: Request, res: Response) => {
         // Process tasks and add limit information
         const tasksWithLimitInfo = await Promise.all(
           app.tasks.map(async (task) => {
-            const taskObj = task.toObject();
             let taskLimitReached = false;
             let taskSubmissions = 0;
             let limitReason: string | null = null;
@@ -1977,7 +1413,7 @@ router.get('/apps', async (req: Request, res: Response) => {
             ) {
               taskSubmissions = await ForgeRaceSubmission.countDocuments({
                 'meta.quest.task_id': task._id.toString(),
-                status: ProcessingStatus.COMPLETED,
+                status: ForgeSubmissionProcessingStatus.COMPLETED,
                 reward: { $gt: 0 } // Only count submissions that received a reward
               });
 
@@ -2010,7 +1446,7 @@ router.get('/apps', async (req: Request, res: Response) => {
 
             // Add limit info to task object
             return {
-              ...taskObj,
+              ...task,
               uploadLimitReached: taskLimitReached,
               currentSubmissions: taskSubmissions,
               limitReason: limitReason
@@ -2053,7 +1489,7 @@ router.get('/pools', async (_req: Request, res: Response) => {
 router.get('/categories', async (_req: Request, res: Response) => {
   try {
     // Aggregate to get unique categories across all apps
-    const categoriesResult = await ForgeApp.aggregate([
+    const categoriesResult = await ForgeAppModel.aggregate([
       { $unwind: '$categories' },
       { $group: { _id: '$categories' } },
       { $sort: { _id: 1 } }

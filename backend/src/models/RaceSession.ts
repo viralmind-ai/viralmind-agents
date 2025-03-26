@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
-import { VPSRegion } from '../services/gym-vps/types.ts';
+import { DBRaceSession, VPSRegion } from '../types/index.ts';
 
-export const raceSessionSchema = new mongoose.Schema(
+export const raceSessionSchema = new mongoose.Schema<DBRaceSession>(
   {
     _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
     address: { type: String, required: true },
@@ -44,4 +44,4 @@ raceSessionSchema.pre('save', function (next) {
   next();
 });
 
-export const RaceSession = mongoose.model('RaceSession', raceSessionSchema);
+export const RaceSessionModel = mongoose.model('RaceSession', raceSessionSchema);

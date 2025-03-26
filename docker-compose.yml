@@ -123,6 +123,7 @@ services:
       - GUACAMOLE_USERNAME=${GUACAMOLE_USERNAME}
       - AX_PARSER_SECRET=${AX_PARSER_SECRET}
       - GYM_FORGE_WEBHOOK=${GYM_FORGE_WEBHOOK}
+      - MINECRAFT_CHAT_WEBHOOK=${MINECRAFT_CHAT_WEBHOOK}
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
@@ -215,6 +216,7 @@ services:
       - GUACAMOLE_USERNAME=${GUACAMOLE_USERNAME}
       - AX_PARSER_SECRET=${AX_PARSER_SECRET}
       - GYM_FORGE_WEBHOOK=${GYM_FORGE_WEBHOOK}
+      - MINECRAFT_CHAT_WEBHOOK=${MINECRAFT_CHAT_WEBHOOK}
     depends_on:
       - mongodb
       - guacd

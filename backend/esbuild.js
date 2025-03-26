@@ -24,34 +24,24 @@ await esbuild.build({
     'tls',
     'os',
     'buffer',
-    
+
     // External packages that should not be bundled
     '@anthropic-ai/sdk',
     '@aws-sdk/client-s3',
     '@coral-xyz/anchor',
     '@solana/spl-token',
     '@solana/web3.js',
-    '@vultr/vultr-node',
     'axios',
     'body-parser',
     'bs58',
     'commander',
     'dotenv',
-    'dots-wrapper',
     'express',
-    'fs',
-    'http2-express-bridge',
     'mongoose',
-    'mysql2',
-    'node-rdpjs',
     'node-ssh',
-    'node-telegram-bot-api',
     'openai',
     'random-words',
     'sharp',
-    'socket.io',
-    'sshpk',
-    'url',
     'vnc-rfb-client'
   ]
 });

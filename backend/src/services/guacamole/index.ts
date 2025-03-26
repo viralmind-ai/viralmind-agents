@@ -4,34 +4,9 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { handleAxiosError } from '../util.ts';
+import { ActiveConnection, FrameInfo, GuacamoleConnection } from '../../types/guacamole.ts';
 
 const execAsync = promisify(exec);
-
-interface GuacamoleConnection {
-  name: string;
-  parentIdentifier: string;
-  protocol: string;
-  parameters: {
-    [key: string]: string;
-  };
-  attributes: {
-    [key: string]: string;
-  };
-}
-
-interface ActiveConnection {
-  identifier: string;
-  connectionIdentifier: string;
-  startDate: number;
-  remoteHost: string;
-  username: string;
-  connectable: boolean;
-}
-
-interface FrameInfo {
-  timestamp: number;
-  buffer: Buffer;
-}
 
 export class GuacamoleService {
   private baseUrl: string;
