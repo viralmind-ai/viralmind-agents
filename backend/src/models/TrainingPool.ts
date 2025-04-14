@@ -23,6 +23,7 @@ const trainingPoolSchema = new Schema<DBTrainingPool>(
       address: { type: String, required: true }
     },
     skills: { type: String, required: true },
+    ownerEmail: { type: String, required: false },
     ownerAddress: { type: String, required: true },
     depositAddress: { type: String, required: true },
     depositPrivateKey: { type: String, required: true },

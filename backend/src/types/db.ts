@@ -203,6 +203,7 @@ export interface DBTrainingPool {
     address: string;
   };
   skills: string;
+  ownerEmail?: string;
   ownerAddress: string;
   depositAddress: string;
   depositPrivateKey: string; // Store private key securely
