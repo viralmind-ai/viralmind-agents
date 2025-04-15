@@ -20,6 +20,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.1",
     "@aws-sdk/client-s3": "^3.732.0",
+    "@aws-sdk/client-ses": "^3.787.0",
     "@coral-xyz/anchor": "^0.30.1",
     "@solana/spl-token": "^0.4.9",
     "@solana/web3.js": "^1.95.8",
@@ -34,6 +35,7 @@
     "mongoose": "^8.2.1",
     "multer": "^1.4.5-lts.1",
     "node-ssh": "^13.2.0",
+    "nodemailer": "^6.10.1",
     "openai": "^4.73.1",
     "random-words": "^2.0.1",
     "sharp": "^0.33.5",
@@ -47,6 +49,7 @@
     "@types/mongoose": "^5.11.97",
     "@types/multer": "^1.4.12",
     "@types/node": "^20.0.0",
+    "@types/nodemailer": "^6.4.17",
     "@types/unzipper": "^0.10.10",
     "nodemon": "^3.1.9",
     "tsx": "^4.19.3",

@@ -1,9 +1,11 @@
 import OpenAI from 'openai';
 import { ForgeAppModel, TrainingPoolModel } from '../../models/Models.ts';
-import { TrainingPoolStatus } from '../../types/index.ts';
+import { DBTrainingPool, TrainingPoolStatus } from '../../types/index.ts';
 import BlockchainService from '../blockchain/index.ts';
 import { Webhook } from '../webhook/index.ts';
 import { APP_TASK_GENERATION_PROMPT } from './prompts.ts';
+import { Document, Types } from 'mongoose';
+import { sendEmail } from '../email/index.ts';
 
 // setup the pool refresher
 const blockchainService = new BlockchainService(process.env.RPC_URL || '', '');
@@ -25,7 +27,6 @@ export function stopRefreshInterval() {
 
 export function startRefreshInterval() {
   refreshInterval = setInterval(async () => {
-    console.log('[Forge Pools] Refreshing all pool statuses');
     try {
       // Get all pools
       const pools = await TrainingPoolModel.find();
@@ -37,53 +38,7 @@ export function startRefreshInterval() {
         await Promise.all(
           batch.map(async (pool) => {
             try {
-              console.log(`[Forge Pools]: Checking pool ${pool.id}`);
-              // Get current token balance from blockchain
-              const balance = await blockchainService.getTokenBalance(
-                pool.token.address,
-                pool.depositAddress
-              );
-
-              // Get SOL balance to check for gas
-              const solBalance = await blockchainService.getSolBalance(pool.depositAddress);
-              const noGas = solBalance <= BlockchainService.MIN_SOL_BALANCE;
-
-              // Update pool funds
-              let statusChanged = false;
-              if (pool.funds !== balance) {
-                pool.funds = balance;
-                statusChanged = true;
-              }
-
-              // Update status based on token and SOL balances
-              if (process.env.NODE_ENV != 'development') {
-                if (noGas) {
-                  console.log(`[Forge Pools]: Pool has no gas.`);
-                  if (pool.status !== TrainingPoolStatus.noGas) {
-                    pool.status = TrainingPoolStatus.noGas;
-                    statusChanged = true;
-                  }
-                } else if (balance === 0 || balance < pool.pricePerDemo) {
-                  if (pool.status !== TrainingPoolStatus.noFunds) {
-                    console.log(`[Forge Pools]: Pool has no funds.`);
-                    pool.status = TrainingPoolStatus.noFunds;
-                    statusChanged = true;
-                  }
-                } else if (
-                  pool.status === TrainingPoolStatus.noFunds ||
-                  pool.status === TrainingPoolStatus.noGas
-                ) {
-                  pool.status = TrainingPoolStatus.paused;
-                  statusChanged = true;
-                }
-              }
-
-              if (statusChanged) {
-                await pool.save();
-                console.log(
-                  `Updated pool ${pool._id} balance to ${balance} and status to ${pool.status}`
-                );
-              }
+              await updatePoolStatus(pool);
             } catch (error) {
               console.error(`Error refreshing pool ${pool._id}:`, error);
             }
@@ -189,4 +144,68 @@ export async function generateAppsForPool(poolId: string, skills: string): Promi
   activeGenerations.set(poolId, generationPromise);
 
   return generationPromise;
+}
+
+export async function updatePoolStatus(
+  pool: Document<unknown, {}, DBTrainingPool> &
+    DBTrainingPool &
+    Required<{ _id: Types.ObjectId }> & { __v: number }
+) {
+  const balance = await blockchainService.getTokenBalance(pool.token.address, pool.depositAddress);
+  const solBalance = await blockchainService.getSolBalance(pool.depositAddress);
+  const noGas = solBalance <= BlockchainService.MIN_SOL_BALANCE;
+  let statusChanged = false;
+  if (process.env.NODE_ENV != 'development') {
+    // Update pool funds
+    pool.funds = balance;
+    if (noGas) {
+      // pool has no SOL
+      if (pool.status !== TrainingPoolStatus.noGas) {
+        pool.status = TrainingPoolStatus.noGas;
+        statusChanged = true;
+      }
+    } else if (balance === 0 || balance < pool.pricePerDemo) {
+      // pool has no $VIRAL
+      if (pool.status !== TrainingPoolStatus.noFunds) {
+        pool.status = TrainingPoolStatus.noFunds;
+        statusChanged = true;
+      }
+    } else if (
+      pool.status === TrainingPoolStatus.noFunds ||
+      pool.status === TrainingPoolStatus.noGas
+    ) {
+      // pool has been funded, re-enable it
+      pool.status = TrainingPoolStatus.paused;
+      statusChanged = true;
+    }
+  }
+  await pool.save();
+  if (statusChanged && pool.ownerEmail) {
+    if (pool.status === TrainingPoolStatus.noGas) {
+      sendEmail({
+        to: pool.ownerEmail,
+        subject: `Viralmind Forge '${pool.name}' Out of Gas`,
+        text: `The wallet for your forge ${pool.name} does not have enough SOL to pay the gas for $VIRAL transactions.\nPlease send some SOL to your forge via the Viralmind App.\n\nThank you for contributing to open computer use data!\n - The Viralmind Team`
+      }).catch((e) => {
+        console.log(e);
+      });
+    } else if (pool.status === TrainingPoolStatus.noFunds) {
+      sendEmail({
+        to: pool.ownerEmail,
+        subject: `Viralmind Forge '${pool.name}' Out of Funds`,
+        text: `The wallet for your forge ${pool.name} does not have enough $VIRAL to send rewards for successful task completions.\nPlease deposit more $VIRAL to your forge via the Viralmind App.\n\nThank you for contributing to open computer use data!\n - The Viralmind Team`
+      }).catch((e) => {
+        console.log(e);
+      });
+    } else if (pool.status === TrainingPoolStatus.paused) {
+      sendEmail({
+        to: pool.ownerEmail,
+        subject: `Viralmind Forge '${pool.name}' Successfully Funded`,
+        text: `The wallet for your forge ${pool.name} has been successfully funded. Your tasks will now appear in the desktop app.\n\nThank you for contributing to open computer use data!\n - The Viralmind Team`
+      }).catch((e) => {
+        console.log(e);
+      });
+    }
+  }
+  return { solBalance, funds: balance, status: pool.status };
 }

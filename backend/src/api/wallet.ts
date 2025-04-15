@@ -13,6 +13,7 @@ import { WalletConnectionModel } from '../models/Models.ts';
 import { ConnectBody } from '../types/index.ts';
 import BlockchainService from '../services/blockchain/index.ts';
 import { checkConnectionSchema, connectWalletSchema } from './schemas/wallet.ts';
+import { requireWalletAddress } from '../middleware/auth.ts';
 
 const router: Router = express.Router();
 const blockchainService = new BlockchainService(process.env.RPC_URL || '', '');
@@ -91,7 +92,7 @@ router.get(
 // Get $VIRAL balance for an address
 router.get(
   '/balance/:address',
-  validateParams({ address: { required: true, rules: [ValidationRules.isString()] } }),
+  validateParams({ address: { required: true, rules: [ValidationRules.isSolanaAddress()] } }),
   errorHandlerAsync(async (req: Request, res: Response) => {
     const { address } = req.params;
 
@@ -100,4 +101,34 @@ router.get(
     res.status(200).json(successResponse({ balance }));
   })
 );
+
+// Get address's nickname
+router.get(
+  '/nickname',
+  validateQuery({ address: { required: true, rules: [ValidationRules.isSolanaAddress()] } }),
+  errorHandlerAsync(async (req: Request, res: Response) => {
+    const { address } = req.query;
+    const nickname = (await WalletConnectionModel.findOne({ address }))?.nickname;
+    res.status(200).json(successResponse(nickname));
+  })
+);
+
+// Set address's nickname
+router.put(
+  '/nickname',
+  requireWalletAddress,
+  validateBody({
+    address: { required: true, rules: [ValidationRules.isSolanaAddress()] },
+    nickname: { required: true, rules: [ValidationRules.isString(), ValidationRules.maxLength(25)] }
+  }),
+  errorHandlerAsync(async (req: Request, res: Response) => {
+    const { address, nickname } = req.body;
+    //@ts-ignore only let the current wallet update their own nickname
+    if (req.walletAddress !== address)
+      throw ApiError.forbidden("You are not allowed to set this user's nickname");
+    await WalletConnectionModel.updateOne({ address }, { $set: { nickname: nickname } });
+    res.status(200).json(successResponse(nickname));
+  })
+);
+
 export { router as walletApi };

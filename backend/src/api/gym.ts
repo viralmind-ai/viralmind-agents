@@ -8,7 +8,7 @@ import { errorHandlerAsync } from '../middleware/errorHandler.ts';
 import { validateBody } from '../middleware/validator.ts';
 import { questRequestSchema, progressCheckSchema } from './schemas/gym.ts';
 import { ApiError, successResponse } from '../middleware/types/errors.ts';
-import { generateDesktopQuest } from '../services/gym/gym.ts';
+import { generateDesktopQuest, getLeaderboardData } from '../services/gym/gym.ts';
 
 dotenv.config();
 
@@ -146,6 +146,14 @@ Base your analysis on visual evidence from the screenshots showing completed act
         completed_objectives
       })
     );
+  })
+);
+
+router.get(
+  '/leaderboards',
+  errorHandlerAsync(async (_req, res) => {
+    const data = await getLeaderboardData();
+    return res.status(200).json(successResponse(data));
   })
 );
 

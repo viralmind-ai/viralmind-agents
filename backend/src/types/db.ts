@@ -203,6 +203,7 @@ export interface DBTrainingPool {
     address: string;
   };
   skills: string;
+  ownerEmail?: string;
   ownerAddress: string;
   depositAddress: string;
   depositPrivateKey: string; // Store private key securely
@@ -281,5 +282,6 @@ export interface DBWalletConnection {
   _id?: Types.ObjectId;
   token: string;
   address: string;
+  nickname?: string;
   createdAt: Date;
 }

@@ -18,6 +18,20 @@ export const chatRequestSchema: ValidationSchema = {
 };
 
 /**
+ * Schema for updating pool email
+ */
+export const updatePoolEmail: ValidationSchema = {
+  id: {
+    required: true,
+    rules: [ValidationRules.isString(), ValidationRules.minLength(1)]
+  },
+  email: {
+    required: true,
+    rules: [ValidationRules.isString(), ValidationRules.minLength(1)]
+  }
+};
+
+/**
  * Schema for refreshing pool balance
  */
 export const refreshPoolSchema: ValidationSchema = {
